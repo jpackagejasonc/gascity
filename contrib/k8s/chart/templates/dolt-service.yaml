@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gas-city.doltName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gas-city.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+  ports:
+  - name: mysql
+    port: 3307
+    targetPort: mysql
+    protocol: TCP

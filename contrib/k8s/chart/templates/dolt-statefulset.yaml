@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gas-city.doltName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  serviceName: {{ include "gas-city.doltName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gas-city.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dolt
+  template:
+    metadata:
+      labels:
+        {{- include "gas-city.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dolt
+    spec:
+      initContainers:
+      - name: init-user
+        image: {{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}
+        imagePullPolicy: {{ .Values.dolt.image.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          # Start a temporary dolt server, create root@% for remote access, then stop.
+          dolt sql-server --host=127.0.0.1 --port=3307 --data-dir=/var/lib/dolt &
+          pid=$!
+          for i in $(seq 1 30); do
+            dolt --host=127.0.0.1 --port=3307 --user=root --no-tls sql -q "SELECT 1" 2>/dev/null && break
+            sleep 1
+          done
+          DOLT_CLI_PASSWORD="" dolt --host=127.0.0.1 --port=3307 --user=root --no-tls sql -q \
+            "CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY ''; GRANT ALL PRIVILEGES ON *.* TO 'root'@'%'"
+          kill $pid 2>/dev/null; wait $pid 2>/dev/null || true
+        volumeMounts:
+        - name: dolt-data
+          mountPath: /var/lib/dolt
+      containers:
+      - name: dolt
+        image: {{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}
+        imagePullPolicy: {{ .Values.dolt.image.pullPolicy }}
+        command:
+        - dolt
+        - sql-server
+        - --host=0.0.0.0
+        - --port=3307
+        - --data-dir=/var/lib/dolt
+        - --max-connections={{ .Values.dolt.maxConnections }}
+        ports:
+        - name: mysql
+          containerPort: 3307
+          protocol: TCP
+        volumeMounts:
+        - name: dolt-data
+          mountPath: /var/lib/dolt
+        livenessProbe:
+          tcpSocket:
+            port: mysql
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: mysql
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.dolt.resources | nindent 10 }}
+  volumeClaimTemplates:
+  - metadata:
+      name: dolt-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      {{- if .Values.dolt.storage.storageClassName }}
+      storageClassName: {{ .Values.dolt.storage.storageClassName }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.dolt.storage.size }}

@@ -1,0 +1,256 @@
+version: '3'
+
+# Run all tasks from this directory.
+# Install Task: https://taskfile.dev/installation/
+
+vars:
+  CLUSTER_NAME: gas-city
+  # Pin the Kubernetes version for reproducibility. Update when bumping k8s. Image specified is default image as of kind v0.31.0
+  KIND_IMAGE: kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+  NAMESPACE: gc
+  REPO_ROOT:
+    sh: git -C {{.TASKFILE_DIR}} rev-parse --show-toplevel
+  DOLT_VERSION:
+    sh: grep ^DOLT_VERSION {{.REPO_ROOT}}/deps.env | cut -d= -f2
+  # Container target platform: always linux, arch matches the host so kind nodes
+  # run native containers (arm64 on Apple Silicon, amd64 on x86).
+  CONTAINER_OS: linux
+  CONTAINER_ARCH:
+    sh: go env GOARCH
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # ---------------------------------------------------------------------------
+  # Prerequisite checks
+  # ---------------------------------------------------------------------------
+
+  check:tools:
+    desc: Verify kind, kubectl, and helm are on PATH
+    silent: true
+    cmds:
+      - command -v kind >/dev/null 2>&1 ||
+        (echo "kind not found — https://kind.sigs.k8s.io/docs/user/quick-start/#installation" && exit 1)
+      - command -v kubectl >/dev/null 2>&1 ||
+        (echo "kubectl not found — https://kubernetes.io/docs/tasks/tools/" && exit 1)
+      - command -v helm >/dev/null 2>&1 ||
+        (echo "helm not found — https://helm.sh/docs/intro/install/" && exit 1)
+
+  # ---------------------------------------------------------------------------
+  # Kind cluster lifecycle
+  # ---------------------------------------------------------------------------
+
+  kind:create:
+    desc: Create the gas-city kind cluster (idempotent)
+    deps: [check:tools]
+    cmds:
+      - kind create cluster --name {{.CLUSTER_NAME}} --image {{.KIND_IMAGE}} --config {{.TASKFILE_DIR}}/kind-config.yaml
+    status:
+      - kind get clusters | grep -q '^{{.CLUSTER_NAME}}$'
+
+  kind:delete:
+    desc: Delete the gas-city kind cluster
+    cmds:
+      - kind delete cluster --name {{.CLUSTER_NAME}}
+
+  # ---------------------------------------------------------------------------
+  # Image builds (delegate to Makefile targets at repo root)
+  # ---------------------------------------------------------------------------
+
+  build:binaries:
+    desc: Build gc and stage bd/br at repo root for the Dockerfile.agent build context
+    dir: '{{.REPO_ROOT}}'
+    cmds:
+      # gc: cross-compile for linux; make build outputs darwin binary to bin/gc.
+      - GOOS={{.CONTAINER_OS}} GOARCH={{.CONTAINER_ARCH}} go build -o gc ./cmd/gc
+      # bd: download the linux release archive matching the container arch.
+      - |
+        if [ ! -f bd ]; then
+          bd_ver=$(grep ^BD_VERSION deps.env | cut -d= -f2)
+          bd_repo=$(grep ^BD_REPO deps.env | cut -d= -f2)
+          archive="beads_${bd_ver#v}_{{.CONTAINER_OS}}_{{.CONTAINER_ARCH}}.tar.gz"
+          echo "Downloading bd ${bd_ver} ({{.CONTAINER_OS}}/{{.CONTAINER_ARCH}})..."
+          curl -sSfL "https://github.com/${bd_repo}/releases/download/${bd_ver}/${archive}" \
+            -o /tmp/gc-beads.tar.gz
+          tmp=$(mktemp -d)
+          tar -xzf /tmp/gc-beads.tar.gz -C "$tmp"
+          find "$tmp" -name "bd" -type f -exec cp {} bd \;
+          chmod +x bd
+          rm -rf "$tmp" /tmp/gc-beads.tar.gz
+        fi
+      # br: download the linux release matching the container arch.
+      # Archive format: br-v<version>-<os>_<arch>.tar.gz
+      - |
+        if [ ! -f br ]; then
+          br_ver=$(grep ^BR_VERSION deps.env | cut -d= -f2)
+          br_repo=$(grep ^BR_REPO deps.env | cut -d= -f2)
+          archive="br-v${br_ver}-{{.CONTAINER_OS}}_{{.CONTAINER_ARCH}}.tar.gz"
+          echo "Downloading br ${br_ver} ({{.CONTAINER_OS}}/{{.CONTAINER_ARCH}})..."
+          curl -sSfL "https://github.com/${br_repo}/releases/download/v${br_ver}/${archive}" \
+            -o /tmp/gc-br.tar.gz
+          tmp=$(mktemp -d)
+          tar -xzf /tmp/gc-br.tar.gz -C "$tmp"
+          find "$tmp" -name "br" -type f -exec cp {} br \;
+          chmod +x br
+          rm -rf "$tmp" /tmp/gc-br.tar.gz
+        fi
+
+  build:base:
+    desc: Build gc-agent-base image (~2.5 min — rebuild only when system deps change)
+    dir: '{{.REPO_ROOT}}'
+    cmds:
+      - make docker-base
+
+  build:agent:
+    desc: Build gc-agent image (~5s on top of base)
+    deps: [build:binaries]
+    dir: '{{.REPO_ROOT}}'
+    cmds:
+      - make docker-agent
+
+  build:controller:
+    desc: Build gc-controller image (~10s on top of agent)
+    dir: '{{.REPO_ROOT}}'
+    cmds:
+      - make docker-controller
+
+  build:mail:
+    desc: Build gc-mcp-mail image (Python, standalone)
+    dir: '{{.REPO_ROOT}}'
+    cmds:
+      - make docker-mail
+
+  build:all:
+    desc: Build all images in dependency order (base → agent → controller, mail parallel)
+    cmds:
+      # mail has no deps on the Go images — build it while base is warming up.
+      - task: build:mail
+      - task: build:base
+      - task: build:agent
+      - task: build:controller
+
+  # ---------------------------------------------------------------------------
+  # Load images into kind
+  # ---------------------------------------------------------------------------
+
+  kind:load:
+    desc: Load all images into the kind cluster (custom + public)
+    deps: [kind:create]
+    cmds:
+      # Custom images built locally
+      - kind load docker-image gc-mcp-mail:latest --name {{.CLUSTER_NAME}}
+      - kind load docker-image gc-agent:latest --name {{.CLUSTER_NAME}}
+      - kind load docker-image gc-controller:latest --name {{.CLUSTER_NAME}}
+      # Public images (dolthub/dolt, alpine/kubectl) are pulled at runtime by
+      # the kind nodes directly from Docker Hub. Pre-loading multi-arch images
+      # via docker save/kind load is unreliable on Colima due to the containerd
+      # image store embedding the full manifest index.
+
+  # ---------------------------------------------------------------------------
+  # Helm operations
+  # ---------------------------------------------------------------------------
+
+  helm:lint:
+    desc: Lint the Helm chart
+    cmds:
+      - helm lint {{.TASKFILE_DIR}}/chart/
+
+  helm:template:
+    desc: Render chart templates (no cluster needed — smoke test only)
+    cmds:
+      - helm template gas-city {{.TASKFILE_DIR}}/chart/ --namespace {{.NAMESPACE}}
+
+  helm:install:
+    desc: Install the Helm chart (waits for all resources to be ready)
+    deps: [kind:create]
+    cmds:
+      - >
+        helm install gas-city {{.TASKFILE_DIR}}/chart/
+        --namespace {{.NAMESPACE}}
+        --create-namespace
+        --set dolt.image.tag={{.DOLT_VERSION}}
+        --wait
+        --timeout 180s
+
+  helm:upgrade:
+    desc: Upgrade an existing release in place
+    cmds:
+      - >
+        helm upgrade gas-city {{.TASKFILE_DIR}}/chart/
+        --namespace {{.NAMESPACE}}
+        --set dolt.image.tag={{.DOLT_VERSION}}
+        --wait
+        --timeout 180s
+
+  helm:uninstall:
+    desc: Uninstall the Helm release (no-op if not installed)
+    cmds:
+      - helm uninstall gas-city --namespace {{.NAMESPACE}} --ignore-not-found || true
+
+  # ---------------------------------------------------------------------------
+  # Verification
+  # ---------------------------------------------------------------------------
+
+  verify:pods:
+    desc: Wait for Dolt StatefulSet and mcp-mail Deployment to become ready
+    cmds:
+      - kubectl rollout status statefulset/gas-city-dolt --namespace {{.NAMESPACE}} --timeout=120s
+      - kubectl rollout status deployment/gas-city-mail --namespace {{.NAMESPACE}} --timeout=60s
+
+  verify:dolt:
+    desc: Smoke-test Dolt — run SELECT 1 inside the pod
+    cmds:
+      - >
+        kubectl exec -n {{.NAMESPACE}} statefulset/gas-city-dolt --
+        sh -c 'DOLT_CLI_PASSWORD="" dolt --host=127.0.0.1 --port=3307 --user=root --no-tls sql -q "SELECT 1"'
+
+  verify:mail:
+    desc: Smoke-test mcp-mail — check /health/liveness inside the pod
+    cmds:
+      - kubectl exec -n {{.NAMESPACE}} deploy/gas-city-mail -- python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health/liveness')"
+
+  # ---------------------------------------------------------------------------
+  # Top-level workflows
+  # ---------------------------------------------------------------------------
+
+  up:
+    desc: Full workflow — create cluster, build all images, load, install, verify
+    cmds:
+      - task: kind:create
+      - task: build:all
+      - task: kind:load
+      - task: helm:lint
+      - task: helm:install
+      - task: verify:pods
+      - task: verify:dolt
+      - task: verify:mail
+
+  down:
+    desc: Uninstall Helm release and delete the kind cluster
+    cmds:
+      - task: helm:uninstall
+      - task: kind:delete
+
+  reset:
+    desc: Tear down and rebuild the full stack from scratch
+    cmds:
+      - task: down
+      - task: up
+
+  ci:
+    desc: CI workflow — skips base build (assumes base image is pre-cached)
+    cmds:
+      - task: kind:create
+      - task: build:agent
+      - task: build:controller
+      - task: build:mail
+      - task: kind:load
+      - task: helm:lint
+      - task: helm:install
+      - task: verify:pods
+      - task: verify:dolt
+      - task: verify:mail

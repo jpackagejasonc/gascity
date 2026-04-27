@@ -1,0 +1,58 @@
+Gas City has been deployed to namespace {{ .Release.Namespace }}.
+
+=== Service endpoints ===
+
+  Dolt (MySQL/3307):
+    {{ include "gas-city.doltName" . }}.{{ .Release.Namespace }}.svc.cluster.local:3307
+
+  mcp-mail (HTTP/8765):
+    {{ include "gas-city.mailName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8765
+
+=== Build images ===
+
+From the repo root:
+
+  docker build -f contrib/k8s/Dockerfile.base  -t gc-agent-base:latest .
+  docker build -f contrib/k8s/Dockerfile.agent -t {{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }} .
+  docker build -f contrib/k8s/Dockerfile.mail  -t {{ .Values.mail.image.repository }}:{{ .Values.mail.image.tag }} .
+{{- if .Values.controller.inCluster }}
+  docker build -f contrib/k8s/Dockerfile.controller -t gc-controller:latest .
+{{- end }}
+
+=== city.toml (paste into your city directory) ===
+
+  [city]
+  name     = "my-k8s-city"
+  provider = "claude"
+
+  [session]
+  provider  = "k8s"
+  namespace = "{{ .Release.Namespace }}"
+  image     = "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+
+  [session.resources]
+  cpu_request    = "{{ .Values.agent.resources.requests.cpu }}"
+  cpu_limit      = "{{ .Values.agent.resources.limits.cpu }}"
+  memory_request = "{{ .Values.agent.resources.requests.memory }}"
+  memory_limit   = "{{ .Values.agent.resources.limits.memory }}"
+
+  [mail]
+  provider = "exec:gc-mail-mcp-agent-mail"
+
+=== Controller mode ===
+{{- if .Values.controller.inCluster }}
+
+  In-cluster controller mode is enabled.
+  ServiceAccount: {{ include "gas-city.controllerSAName" . }}
+
+  Deploy the controller pod and configure it to use this ServiceAccount.
+  See contrib/k8s/Dockerfile.controller for the controller image.
+{{- else }}
+
+  Local controller mode (default). Run gc from your laptop:
+
+    gc start
+
+  The gc binary uses your kubeconfig (~/.kube/config) to manage pods.
+  To switch to in-cluster mode: helm upgrade <release> --set controller.inCluster=true
+{{- end }}

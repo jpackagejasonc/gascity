@@ -1,0 +1,12 @@
+apiVersion: v2
+name: gas-city
+description: Gas City orchestration infrastructure for Kubernetes (Dolt, mcp-mail, RBAC, event cleanup)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - gas-city
+  - multi-agent
+  - orchestration
+  - dolt
+home: https://github.com/steveyegge/gastown

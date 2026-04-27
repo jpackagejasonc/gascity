@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gas-city.mailName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mail
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gas-city.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mail
+  template:
+    metadata:
+      labels:
+        {{- include "gas-city.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mail
+    spec:
+      containers:
+      - name: mcp-mail
+        image: {{ .Values.mail.image.repository }}:{{ .Values.mail.image.tag }}
+        imagePullPolicy: {{ .Values.mail.image.pullPolicy }}
+        ports:
+        - containerPort: 8765
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /health/liveness
+            port: 8765
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/liveness
+            port: 8765
+          initialDelaySeconds: 3
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.mail.resources | nindent 10 }}

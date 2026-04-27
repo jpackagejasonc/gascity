@@ -1,0 +1,60 @@
+{{- if or .Values.controller.inCluster .Values.eventCleanup.enabled }}
+# The controller ServiceAccount is created when:
+#   - controller.inCluster: true  (gc runs inside the cluster, needs pod management)
+#   - eventCleanup.enabled: true  (CronJob needs configmap delete permission)
+# The pod lifecycle rules are only added when inCluster: true.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "gas-city.controllerSAName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gas-city.controllerSAName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+rules:
+  {{- if .Values.controller.inCluster }}
+  # Pod lifecycle — create, update, delete agent pods.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod exec — run commands inside agent containers (nudge, peek, meta).
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # Pod logs — diagnostics and debugging.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  {{- end }}
+  # ConfigMaps — gc-events-k8s stores events, gc-beads-k8s stores beads.
+  # Also used by the event cleanup CronJob (eventCleanup.enabled).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gas-city.controllerSAName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gas-city.controllerSAName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "gas-city.controllerSAName" . }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

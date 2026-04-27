@@ -1,0 +1,75 @@
+# Gas City Helm chart values.
+#
+# Install:
+#   helm install gas-city contrib/k8s/chart --namespace gc --create-namespace
+#
+# See templates/NOTES.txt for post-install configuration steps.
+
+# -- Override the fully qualified resource name prefix (default: <release>-gas-city).
+fullnameOverride: ""
+
+# Namespace creation. Set create: false if the namespace already exists.
+namespace:
+  create: true
+
+# Controller mode. Set inCluster: true when running the gc controller inside
+# the cluster (production). Leave false for a local gc binary using kubeconfig.
+controller:
+  inCluster: false
+
+# Dolt SQL database (MySQL-compatible, used as the beads/events provider).
+dolt:
+  image:
+    repository: dolthub/dolt
+    tag: 1.86.1
+    pullPolicy: IfNotPresent
+  # Maximum concurrent connections. 100 agents × ~3 connections = 300; 500 gives burst headroom.
+  maxConnections: 500
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  storage:
+    size: 20Gi
+    # storageClassName: "" uses the cluster default StorageClass.
+    storageClassName: ""
+
+# mcp-mail inter-agent messaging server.
+mail:
+  image:
+    repository: gc-mcp-mail
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# Agent pod image/resources — referenced by city.toml, not deployed by this chart.
+# These values are printed in NOTES.txt so you can paste them into city.toml.
+agent:
+  image:
+    repository: gc-agent
+    tag: latest
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# Periodic cleanup of event ConfigMaps (label: gc/component=event).
+eventCleanup:
+  enabled: true
+  schedule: "0 */6 * * *"
+  maxAgeHours: 24
+  image:
+    repository: alpine/kubectl
+    tag: 1.35.4
