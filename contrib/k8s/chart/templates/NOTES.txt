@@ -7,6 +7,16 @@ Gas City has been deployed to namespace {{ .Release.Namespace }}.
 
   mcp-mail (HTTP/8765):
     {{ include "gas-city.mailName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8765
+{{- if .Values.ollama.enabled }}
+
+  Ollama (HTTP/11434):
+    {{ include "gas-city.ollamaName" . }}.{{ .Release.Namespace }}.svc.cluster.local:11434
+    Model: {{ .Values.ollama.model }} (pulled by init container on first start)
+
+  Check model pull status:
+    kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "gas-city.ollamaName" . }} -c pull-model
+    kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "gas-city.ollamaName" . }} -- ollama list
+{{- end }}
 
 === Build images ===
 
@@ -19,34 +29,62 @@ From the repo root:
   docker build -f contrib/k8s/Dockerfile.controller -t gc-controller:latest .
 {{- end }}
 
+{{- if not .Values.controller.inCluster }}
 === city.toml (paste into your city directory) ===
 
-  [city]
-  name     = "my-k8s-city"
-  provider = "claude"
+  [workspace]
+  name      = "{{ .Values.controller.cityName }}"
+  provider  = "{{ .Values.controller.provider }}"
 
   [session]
-  provider  = "k8s"
-  namespace = "{{ .Release.Namespace }}"
-  image     = "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+  provider = "k8s"
 
-  [session.resources]
-  cpu_request    = "{{ .Values.agent.resources.requests.cpu }}"
-  cpu_limit      = "{{ .Values.agent.resources.limits.cpu }}"
-  memory_request = "{{ .Values.agent.resources.requests.memory }}"
-  memory_limit   = "{{ .Values.agent.resources.limits.memory }}"
+  [session.k8s]
+  namespace   = "{{ .Release.Namespace }}"
+  image       = "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+  cpu_request = "{{ .Values.agent.resources.requests.cpu }}"
+  cpu_limit   = "{{ .Values.agent.resources.limits.cpu }}"
+  mem_request = "{{ .Values.agent.resources.requests.memory }}"
+  mem_limit   = "{{ .Values.agent.resources.limits.memory }}"
 
   [mail]
   provider = "exec:gc-mail-mcp-agent-mail"
 
+{{- end }}
+
 === Controller mode ===
 {{- if .Values.controller.inCluster }}
 
-  In-cluster controller mode is enabled.
-  ServiceAccount: {{ include "gas-city.controllerSAName" . }}
+  In-cluster controller is running.
 
-  Deploy the controller pod and configure it to use this ServiceAccount.
-  See contrib/k8s/Dockerfile.controller for the controller image.
+  gc API (HTTP/{{ .Values.controller.apiPort }}):
+    {{ include "gas-city.fullname" . }}-controller.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.controller.apiPort }}
+
+  The controller reads city.toml from ConfigMap: {{ include "gas-city.fullname" . }}-city
+
+  {{- if .Values.ollama.enabled }}
+  Provider: opencode → Ollama ({{ .Values.ollama.model }}) — no API key required.
+
+=== Hello-world demo ===
+
+  Sling a task to the coder agent:
+    task demo:sling
+
+  Watch the bead (get ID from sling output):
+    task demo:watch BEAD_ID=<id>
+
+  Or run directly:
+    kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "gas-city.fullname" . }}-controller -- \
+      gc sling hello-world/opencode "Create a Python script that prints hello world"
+
+  Open the dashboard (two terminals):
+    task demo:port-forward   # terminal 1 — forwards API (9443) and dashboard (7373)
+    task demo:dashboard      # terminal 2 — opens http://localhost:7373
+  {{- else }}
+  {{ .Values.credentials.envVar }} must be provided via one of:
+    --set credentials.apiKey=<key>
+    --set credentials.existingSecret=<secret-name>
+  {{- end }}
 {{- else }}
 
   Local controller mode (default). Run gc from your laptop:

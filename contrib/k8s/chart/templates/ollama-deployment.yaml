@@ -1,0 +1,103 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gas-city.ollamaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gas-city.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ollama
+  template:
+    metadata:
+      labels:
+        {{- include "gas-city.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: pull-model
+        image: {{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}
+        imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          # Start ollama in the background, wait for it to be ready, pull the model, then stop.
+          OLLAMA_HOST=127.0.0.1:11434 ollama serve &
+          pid=$!
+          for i in $(seq 1 30); do
+            ollama list >/dev/null 2>&1 && break
+            sleep 2
+          done
+          ollama pull {{ .Values.ollama.model }}
+          kill $pid 2>/dev/null; wait $pid 2>/dev/null || true
+        env:
+        - name: OLLAMA_MODELS
+          value: /root/.ollama/models
+        volumeMounts:
+        - name: ollama-data
+          mountPath: /root/.ollama
+      containers:
+      - name: ollama
+        image: {{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}
+        imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+        command: ["ollama", "serve"]
+        ports:
+        - name: http
+          containerPort: 11434
+          protocol: TCP
+        env:
+        - name: OLLAMA_HOST
+          value: "0.0.0.0:11434"
+        - name: OLLAMA_MODELS
+          value: /root/.ollama/models
+        volumeMounts:
+        - name: ollama-data
+          mountPath: /root/.ollama
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 11434
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 11434
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.ollama.resources | nindent 10 }}
+      volumes:
+      - name: ollama-data
+        persistentVolumeClaim:
+          claimName: {{ include "gas-city.ollamaName" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "gas-city.ollamaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.ollama.storage.storageClassName }}
+  storageClassName: {{ .Values.ollama.storage.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ollama.storage.size }}
+{{- end }}

@@ -1,0 +1,20 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gas-city.ollamaName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gas-city.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+  ports:
+  - name: http
+    port: 11434
+    targetPort: http
+    protocol: TCP
+{{- end }}

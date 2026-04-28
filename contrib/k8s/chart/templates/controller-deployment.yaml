@@ -1,0 +1,135 @@
+{{- if .Values.controller.inCluster }}
+{{- if and (not .Values.ollama.enabled) (not .Values.credentials.existingSecret) (not .Values.credentials.apiKey) }}
+{{- fail "controller.inCluster=true requires credentials.apiKey, credentials.existingSecret, or ollama.enabled=true" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gas-city.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gas-city.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "gas-city.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ include "gas-city.controllerSAName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: gc-init
+        image: {{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+        command:
+        - sh
+        - -c
+        - |
+          [ -d /city/.gc ] || gc init --from /city /city
+          {{- if .Values.ollama.enabled }}
+          grep -q 'hello-world' /city/.gc/site.toml 2>/dev/null || \
+            printf '\n[[rig]]\nname = "hello-world"\npath = "/demo/hello-world"\n' >> /city/.gc/site.toml
+          git init /demo/hello-world -b main 2>/dev/null || true
+          {{- end }}
+        env:
+        - name: GC_DOLT_HOST
+          value: {{ include "gas-city.doltName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+        - name: GC_DOLT_PORT
+          value: "3307"
+        volumeMounts:
+        - name: city-config
+          mountPath: /city/city.toml
+          subPath: city.toml
+          readOnly: true
+        - name: city-runtime
+          mountPath: /city/.gc
+        {{- if .Values.ollama.enabled }}
+        - name: demo-rig
+          mountPath: /demo
+        {{- end }}
+      containers:
+      - name: controller
+        image: {{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+        command: ["gc", "start", "--foreground", "/city"]
+        ports:
+        - name: api
+          containerPort: {{ .Values.controller.apiPort }}
+          protocol: TCP
+        env:
+        - name: GC_DOLT_HOST
+          value: {{ include "gas-city.doltName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+        - name: GC_DOLT_PORT
+          value: "3307"
+        - name: BEADS_DOLT_SERVER_HOST
+          value: {{ include "gas-city.doltName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+        - name: BEADS_DOLT_SERVER_PORT
+          value: "3307"
+        - name: BEADS_DOLT_AUTO_START
+          value: "0"
+        - name: GC_MCP_MAIL_URL
+          value: http://{{ include "gas-city.mailName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8765
+        {{- $secretName := .Values.credentials.existingSecret | default (printf "%s-credentials" (include "gas-city.fullname" .)) }}
+        {{- if or .Values.credentials.existingSecret .Values.credentials.apiKey }}
+        - name: {{ .Values.credentials.envVar }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ $secretName }}
+              key: {{ .Values.credentials.existingSecretKey }}
+        {{- end }}
+        volumeMounts:
+        - name: city-config
+          mountPath: /city/city.toml
+          subPath: city.toml
+          readOnly: true
+        - name: city-runtime
+          mountPath: /city/.gc
+        {{- if .Values.ollama.enabled }}
+        - name: demo-rig
+          mountPath: /demo
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.controller.apiPort }}
+          initialDelaySeconds: 15
+          periodSeconds: 30
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.controller.apiPort }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.controller.resources | nindent 10 }}
+      - name: dashboard
+        image: {{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+        command: ["gc", "dashboard", "--api", "http://localhost:{{ .Values.controller.apiPort }}", "--port", "{{ .Values.controller.dashboardPort }}"]
+        ports:
+        - name: dashboard
+          containerPort: {{ .Values.controller.dashboardPort }}
+          protocol: TCP
+      volumes:
+      - name: city-config
+        configMap:
+          name: {{ include "gas-city.fullname" . }}-city
+      - name: city-runtime
+        emptyDir: {}
+      {{- if .Values.ollama.enabled }}
+      - name: demo-rig
+        emptyDir: {}
+      {{- end }}
+{{- end }}

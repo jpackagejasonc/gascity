@@ -69,3 +69,7 @@ Per-component resource name helpers.
 {{- define "gas-city.eventCleanupName" -}}
 {{- printf "%s-event-cleanup" (include "gas-city.fullname" .) }}
 {{- end }}
+
+{{- define "gas-city.ollamaName" -}}
+{{- printf "%s-ollama" (include "gas-city.fullname" .) }}
+{{- end }}

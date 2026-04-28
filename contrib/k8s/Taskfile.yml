@@ -124,6 +124,13 @@ tasks:
     cmds:
       - make docker-mail
 
+  build:opencode-agent:
+    desc: Build gc-opencode-agent image for the local-model demo (opencode + Ollama)
+    deps: [build:binaries]
+    dir: '{{.REPO_ROOT}}'
+    cmds:
+      - docker build -f contrib/k8s/Dockerfile.opencode-agent -t gc-opencode-agent:latest .
+
   build:all:
     desc: Build all images in dependency order (base → agent → controller, mail parallel)
     cmds:
@@ -163,6 +170,14 @@ tasks:
     desc: Render chart templates (no cluster needed — smoke test only)
     cmds:
       - helm template gas-city {{.TASKFILE_DIR}}/chart/ --namespace {{.NAMESPACE}}
+      - >
+        helm template gas-city {{.TASKFILE_DIR}}/chart/ --namespace {{.NAMESPACE}}
+        --set controller.inCluster=true
+        --set credentials.apiKey=smoke-test
+      - >
+        helm template gas-city {{.TASKFILE_DIR}}/chart/ --namespace {{.NAMESPACE}}
+        --set ollama.enabled=true
+        --set controller.inCluster=true
 
   helm:install:
     desc: Install the Helm chart (waits for all resources to be ready)
@@ -205,13 +220,51 @@ tasks:
     desc: Smoke-test Dolt — run SELECT 1 inside the pod
     cmds:
       - >
-        kubectl exec -n {{.NAMESPACE}} statefulset/gas-city-dolt --
+        kubectl exec -n {{.NAMESPACE}} -c dolt statefulset/gas-city-dolt --
         sh -c 'DOLT_CLI_PASSWORD="" dolt --host=127.0.0.1 --port=3307 --user=root --no-tls sql -q "SELECT 1"'
 
   verify:mail:
     desc: Smoke-test mcp-mail — check /health/liveness inside the pod
     cmds:
       - kubectl exec -n {{.NAMESPACE}} deploy/gas-city-mail -- python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health/liveness')"
+
+  verify:ollama:
+    desc: Wait for Ollama to be ready and confirm the target model is pulled
+    vars:
+      OLLAMA_MODEL:
+        sh: helm get values gas-city -n {{.NAMESPACE}} -o json 2>/dev/null | grep -o '"model":"[^"]*"' | cut -d'"' -f4 || echo "codegemma:2b"
+    cmds:
+      - kubectl rollout status deployment/gas-city-ollama --namespace {{.NAMESPACE}} --timeout=600s
+      - >
+        kubectl exec -n {{.NAMESPACE}} -c ollama deploy/gas-city-ollama --
+        ollama list | grep -q "{{.OLLAMA_MODEL}}" ||
+        (echo "Model {{.OLLAMA_MODEL}} not found — check: kubectl logs -n {{.NAMESPACE}} deploy/gas-city-ollama -c pull-model" && exit 1)
+
+  # ---------------------------------------------------------------------------
+  # Demo interaction (requires: task demo is complete)
+  # ---------------------------------------------------------------------------
+
+  demo:port-forward:
+    desc: Expose gc API (9443) and dashboard (7373) at localhost (keep running)
+    cmds:
+      - kubectl port-forward -n {{.NAMESPACE}} svc/gas-city-controller 9443:9443 7373:7373
+
+  demo:dashboard:
+    desc: Open the gc dashboard in the browser (requires demo:port-forward running)
+    cmds:
+      - open http://localhost:7373
+
+  demo:sling:
+    desc: Route a hello-world task to the coder agent
+    cmds:
+      - >
+        kubectl exec -n {{.NAMESPACE}} -c controller deploy/gas-city-controller --
+        gc sling hello-world/opencode "Create a Python script called hello.py that prints hello world"
+
+  demo:watch:
+    desc: "Watch a bead (usage: task demo:watch BEAD_ID=<id>)"
+    cmds:
+      - kubectl exec -n {{.NAMESPACE}} -c controller deploy/gas-city-controller -- gc bd show {{.BEAD_ID}} --watch
 
   # ---------------------------------------------------------------------------
   # Top-level workflows
@@ -228,6 +281,37 @@ tasks:
       - task: verify:pods
       - task: verify:dolt
       - task: verify:mail
+
+  demo:
+    desc: Self-contained demo — opencode + Ollama (no external API key needed)
+    cmds:
+      - task: kind:create
+      - task: build:base
+      - task: build:opencode-agent
+      # Controller must extend gc-opencode-agent so that "opencode acp" is
+      # available inside the controller process (ACP handshake runs there).
+      - docker build -f {{.TASKFILE_DIR}}/Dockerfile.controller
+        --build-arg BASE=gc-opencode-agent:latest
+        -t gc-controller:latest {{.REPO_ROOT}}
+      - task: build:mail
+      - kind load docker-image gc-opencode-agent:latest --name {{.CLUSTER_NAME}}
+      - kind load docker-image gc-controller:latest --name {{.CLUSTER_NAME}}
+      - kind load docker-image gc-mcp-mail:latest --name {{.CLUSTER_NAME}}
+      - task: helm:lint
+      - >
+        helm install gas-city {{.TASKFILE_DIR}}/chart/
+        --namespace {{.NAMESPACE}}
+        --create-namespace
+        --set dolt.image.tag={{.DOLT_VERSION}}
+        --set ollama.enabled=true
+        --set controller.inCluster=true
+        --set agent.image.repository=gc-opencode-agent
+        --wait
+        --timeout 600s
+      - task: verify:pods
+      - task: verify:dolt
+      - task: verify:mail
+      - task: verify:ollama
 
   down:
     desc: Uninstall Helm release and delete the kind cluster

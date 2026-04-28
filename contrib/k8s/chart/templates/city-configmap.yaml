@@ -1,0 +1,55 @@
+{{- if .Values.controller.inCluster }}
+# city.toml rendered from Helm values, mounted into the controller pod.
+# The controller reads this on startup via: gc start --foreground /city
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gas-city.fullname" . }}-city
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+data:
+  city.toml: |
+    [workspace]
+    name      = {{ .Values.controller.cityName | quote }}
+    provider  = {{ ((.Values.ollama.enabled) | ternary "opencode" .Values.controller.provider) | quote }}
+
+    [session]
+    provider = "k8s"
+
+    [session.k8s]
+    namespace   = {{ .Release.Namespace | quote }}
+    image       = {{ printf "%s:%s" .Values.agent.image.repository .Values.agent.image.tag | quote }}
+    cpu_request = {{ .Values.agent.resources.requests.cpu | quote }}
+    cpu_limit   = {{ .Values.agent.resources.limits.cpu | quote }}
+    mem_request = {{ .Values.agent.resources.requests.memory | quote }}
+    mem_limit   = {{ .Values.agent.resources.limits.memory | quote }}
+
+    [dolt]
+    host = {{ printf "%s.%s.svc.cluster.local" (include "gas-city.doltName" .) .Release.Namespace | quote }}
+    port = 3307
+
+    [mail]
+    provider = "exec:gc-mail-mcp-agent-mail"
+
+    [api]
+    port = {{ .Values.controller.apiPort }}
+    bind = "0.0.0.0"
+    {{- if .Values.ollama.enabled }}
+
+    [providers.opencode]
+    base = "builtin:opencode"
+
+    [providers.opencode.env]
+    OPENAI_API_KEY  = "ollama"
+    OPENAI_BASE_URL = "http://{{ include "gas-city.ollamaName" . }}.{{ .Release.Namespace }}.svc.cluster.local:11434/v1"
+    OPENCODE_MODEL  = {{ .Values.ollama.model | quote }}
+
+    [[agent]]
+    name = "opencode"
+
+    [[rigs]]
+    name = "hello-world"
+    {{- end }}
+{{- end }}

@@ -1,0 +1,16 @@
+{{- if .Values.dolt.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gas-city.doltName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dolt
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "gas-city.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dolt
+{{- end }}

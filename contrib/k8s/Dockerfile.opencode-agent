@@ -1,0 +1,19 @@
+ARG BASE_IMAGE=gc-agent-base:latest
+FROM ${BASE_IMAGE}
+
+# OpenCode CLI — local-model coding agent (works with Ollama, no API key required).
+# Replaces Claude Code for the self-contained demo stack.
+# Verify the exact package name at https://opencode.ai/docs before building.
+RUN npm install -g opencode-ai
+
+# Same binaries as Dockerfile.agent.
+COPY bd /usr/local/bin/bd
+COPY br /usr/local/bin/br
+COPY gc /usr/local/bin/gc
+COPY contrib/beads-scripts/gc-beads-br /usr/local/bin/gc-beads-br
+COPY contrib/mail-scripts/gc-mail-mcp-agent-mail /usr/local/bin/gc-mail-mcp-agent-mail
+
+WORKDIR /workspace
+RUN chown gcagent:gcagent /workspace
+USER gcagent
+CMD ["/bin/bash"]

@@ -1,0 +1,24 @@
+{{- if .Values.controller.inCluster }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gas-city.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gas-city.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gas-city.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+  ports:
+  - name: api
+    port: {{ .Values.controller.apiPort }}
+    targetPort: api
+    protocol: TCP
+  - name: dashboard
+    port: {{ .Values.controller.dashboardPort }}
+    targetPort: dashboard
+    protocol: TCP
+{{- end }}

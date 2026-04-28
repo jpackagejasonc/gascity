@@ -16,6 +16,27 @@ namespace:
 # the cluster (production). Leave false for a local gc binary using kubeconfig.
 controller:
   inCluster: false
+  # In-cluster controller image (only used when inCluster: true).
+  image:
+    repository: gc-controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  # City workspace name written into the generated city.toml ConfigMap.
+  cityName: my-k8s-city
+  # AI provider written into city.toml. Builtin names: claude, codex, gemini,
+  # amp, opencode, cursor, copilot, auggie, pi, omp.
+  provider: claude
+  # gc HTTP API port exposed by the controller Service (only when inCluster: true).
+  apiPort: 9443
+  # gc dashboard port exposed by the controller Service (only when inCluster: true).
+  dashboardPort: 7373
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 2Gi
 
 # Dolt SQL database (MySQL-compatible, used as the beads/events provider).
 dolt:
@@ -30,12 +51,16 @@ dolt:
       cpu: 500m
       memory: 1Gi
     limits:
-      cpu: "2"
+      cpu: 2
       memory: 4Gi
   storage:
     size: 20Gi
     # storageClassName: "" uses the cluster default StorageClass.
     storageClassName: ""
+  # PodDisruptionBudget for the Dolt StatefulSet. Protects against simultaneous
+  # eviction during node drains. Only effective when external drain automation runs.
+  pdb:
+    enabled: false
 
 # mcp-mail inter-agent messaging server.
 mail:
@@ -48,7 +73,7 @@ mail:
       cpu: 500m
       memory: 512Mi
     limits:
-      cpu: "1"
+      cpu: 1
       memory: 1Gi
 
 # Agent pod image/resources — referenced by city.toml, not deployed by this chart.
@@ -62,8 +87,52 @@ agent:
       cpu: 500m
       memory: 1Gi
     limits:
-      cpu: "2"
+      cpu: 2
       memory: 4Gi
+
+# AI provider credentials injected into the controller pod.
+# Set apiKey directly (chart creates a Secret) or reference an existingSecret.
+# envVar must match what the provider CLI reads — common values:
+#   claude/amp → ANTHROPIC_API_KEY
+#   codex      → OPENAI_API_KEY
+#   gemini     → GEMINI_API_KEY
+credentials:
+  apiKey: ""
+  envVar: ANTHROPIC_API_KEY
+  # Name of a pre-existing Secret. When set, apiKey is ignored.
+  existingSecret: ""
+  # Key within the existingSecret that holds the API key value.
+  existingSecretKey: ANTHROPIC_API_KEY
+
+# Image pull secrets for private container registries.
+# Each entry must be the name of a Secret of type kubernetes.io/dockerconfigjson.
+# Example: imagePullSecrets: [{name: my-registry-secret}]
+imagePullSecrets: []
+
+# Local Ollama LLM server for a self-contained demo (no external API key needed).
+# When enabled: deploys Ollama, pulls the specified model, forces provider=opencode,
+# and injects the Ollama connection env vars into all agent pods via city.toml.
+ollama:
+  enabled: false
+  image:
+    repository: ollama/ollama
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Model pulled on first startup. CPU-feasible options:
+  #   codegemma:2b       (~1.6 GB) — code-tuned Gemma 2, good CPU demo default
+  #   codegemma:7b       (~4.8 GB) — better quality, needs ~8 GB RAM
+  #   qwen2.5-coder:1.5b (~1 GB)   — smaller alternative
+  model: codegemma:2b
+  storage:
+    size: 10Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 2
+      memory: 4Gi
+    limits:
+      cpu: 4
+      memory: 8Gi
 
 # Periodic cleanup of event ConfigMaps (label: gc/component=event).
 eventCleanup:
