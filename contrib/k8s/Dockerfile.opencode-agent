@@ -1,10 +1,14 @@
+# Local build-layer image, not a registry pull.
 ARG BASE_IMAGE=gc-agent-base:latest
 FROM ${BASE_IMAGE}
 
+# Node.js (Prerequisite for OpenCode CLI).
 # OpenCode CLI — local-model coding agent (works with Ollama, no API key required).
 # Replaces Claude Code for the self-contained demo stack.
-# Verify the exact package name at https://opencode.ai/docs before building.
-RUN npm install -g opencode-ai
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g opencode-ai
 
 # Same binaries as Dockerfile.agent.
 COPY bd /usr/local/bin/bd
