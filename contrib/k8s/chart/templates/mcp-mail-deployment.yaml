@@ -22,10 +22,22 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: mcp-mail
         image: {{ .Values.mail.image.repository }}:{{ .Values.mail.image.tag }}
         imagePullPolicy: {{ .Values.mail.image.pullPolicy }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          readOnlyRootFilesystem: true
         ports:
         - containerPort: 8765
           name: http
@@ -45,3 +57,13 @@ spec:
           failureThreshold: 3
         resources:
           {{- toYaml .Values.mail.resources | nindent 10 }}
+        volumeMounts:
+        - name: mail-data
+          mountPath: /var/lib/mcp-mail
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: mail-data
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}

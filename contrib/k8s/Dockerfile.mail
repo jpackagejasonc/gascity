@@ -24,7 +24,7 @@ RUN python -m pip install --no-cache-dir --require-hashes \
 EXPOSE 8765
 
 # mcp_agent_mail uses SQLite internally — data dir for persistence.
-RUN useradd -r -m -d /var/lib/mcp-mail -s /usr/sbin/nologin mcp-mail \
+RUN useradd -r -u 10002 -m -d /var/lib/mcp-mail -s /usr/sbin/nologin mcp-mail \
     && mkdir -p /var/lib/mcp-mail \
     && chown -R mcp-mail:mcp-mail /var/lib/mcp-mail
 WORKDIR /var/lib/mcp-mail

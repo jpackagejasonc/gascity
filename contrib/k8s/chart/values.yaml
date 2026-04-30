@@ -36,13 +36,13 @@ controller:
       memory: 256Mi
     limits:
       cpu: 1
-      memory: 2Gi
+      memory: 3Gi
 
 # Dolt SQL database (MySQL-compatible, used as the beads/events provider).
 dolt:
   image:
     repository: dolthub/dolt
-    tag: 1.86.1
+    tag: 1.86.6
     pullPolicy: IfNotPresent
   # Maximum concurrent connections. 100 agents × ~3 connections = 300; 500 gives burst headroom.
   maxConnections: 500
@@ -141,4 +141,4 @@ eventCleanup:
   maxAgeHours: 24
   image:
     repository: alpine/kubectl
-    tag: 1.35.4
+    tag: 1.36.0

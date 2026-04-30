@@ -23,10 +23,25 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
       - name: init-user
         image: {{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}
         imagePullPolicy: {{ .Values.dolt.image.pullPolicy }}
+        env:
+        - name: HOME
+          value: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          readOnlyRootFilesystem: true
         command:
         - sh
         - -c
@@ -44,10 +59,20 @@ spec:
         volumeMounts:
         - name: dolt-data
           mountPath: /var/lib/dolt
+        - name: tmp
+          mountPath: /tmp
       containers:
       - name: dolt
         image: {{ .Values.dolt.image.repository }}:{{ .Values.dolt.image.tag }}
         imagePullPolicy: {{ .Values.dolt.image.pullPolicy }}
+        env:
+        - name: HOME
+          value: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          readOnlyRootFilesystem: true
         command:
         - dolt
         - sql-server
@@ -62,6 +87,8 @@ spec:
         volumeMounts:
         - name: dolt-data
           mountPath: /var/lib/dolt
+        - name: tmp
+          mountPath: /tmp
         livenessProbe:
           tcpSocket:
             port: mysql
@@ -76,6 +103,9 @@ spec:
           failureThreshold: 3
         resources:
           {{- toYaml .Values.dolt.resources | nindent 10 }}
+      volumes:
+      - name: tmp
+        emptyDir: {}
   volumeClaimTemplates:
   - metadata:
       name: dolt-data
