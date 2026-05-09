@@ -21,7 +21,7 @@ LDFLAGS := -X main.version=$(VERSION) \
            -X main.commit=$(COMMIT) \
            -X main.date=$(BUILD_TIME)
 
-.PHONY: build check check-all check-bd check-docker check-docs check-dolt check-version-tag lint fmt-check fmt vet test test-fast-parallel test-fsys-darwin-compile test-cmd-gc-process test-cmd-gc-process-shard test-cmd-gc-process-parallel test-worker-core test-worker-core-phase2 test-worker-core-phase2-real-transport setup-worker-inference test-worker-inference test-worker-inference-phase3 test-acceptance test-acceptance-b test-acceptance-c test-acceptance-all test-tutorial-goldens test-tutorial-regression test-tutorial test-integration test-integration-shards test-integration-shards-parallel test-integration-shards-cover test-integration-packages test-integration-packages-cover test-integration-review-formulas test-integration-review-formulas-cover test-integration-review-formulas-basic test-integration-review-formulas-basic-cover test-integration-review-formulas-retries test-integration-review-formulas-retries-cover test-integration-review-formulas-recovery test-integration-review-formulas-recovery-cover test-integration-bdstore test-integration-bdstore-cover test-integration-rest test-integration-rest-cover test-integration-rest-smoke test-integration-rest-smoke-cover test-integration-rest-full test-integration-rest-full-cover test-local-full-parallel test-mcp-mail test-docker test-k8s test-cover cover install install-tools install-buildx setup clean generate check-schema docker-base docker-agent docker-controller docker-mail docs-dev dashboard-smoke
+.PHONY: build check check-all check-bd check-docker check-docs check-dolt check-version-tag lint lint-full lint-new lint-changed fmt-check fmt vet test test-fast-parallel test-fsys-darwin-compile test-cmd-gc-process test-cmd-gc-process-shard test-cmd-gc-process-parallel test-worker-core test-worker-core-phase2 test-worker-core-phase2-real-transport setup-worker-inference test-worker-inference test-worker-inference-phase3 test-acceptance test-acceptance-b test-acceptance-c test-acceptance-all test-tutorial-goldens test-tutorial-regression test-tutorial test-integration test-integration-shards test-integration-shards-parallel test-integration-shards-cover test-integration-packages test-integration-packages-cover test-integration-review-formulas test-integration-review-formulas-cover test-integration-review-formulas-basic test-integration-review-formulas-basic-cover test-integration-review-formulas-retries test-integration-review-formulas-retries-cover test-integration-review-formulas-recovery test-integration-review-formulas-recovery-cover test-integration-bdstore test-integration-bdstore-cover test-integration-rest test-integration-rest-cover test-integration-rest-smoke test-integration-rest-smoke-cover test-integration-rest-full test-integration-rest-full-cover test-local-full-parallel test-mcp-mail test-docker test-k8s test-cover cover install install-tools install-buildx setup clean generate check-schema docker-base docker-agent docker-controller docker-mail docs-dev dashboard-smoke
 
 ## build: compile gc binary with version metadata
 build:
@@ -108,9 +108,57 @@ check-version-tag:
 ## check-all: run all quality gates including integration tests (CI)
 check-all: fmt-check lint vet check-bd check-dolt check-docker test-integration check-docs
 
-## lint: run golangci-lint
-lint: $(GOLANGCI_LINT)
-	$(GOLANGCI_LINT) run ./...
+LINT_BASE ?= origin/main
+LINT_CHANGED_REF ?= HEAD
+LINT_CHANGED_SCOPE ?= worktree
+LINT_FLAGS ?=
+
+## lint: run full-repo golangci-lint
+lint: lint-full
+
+## lint-full: run golangci-lint across all packages
+lint-full: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run $(LINT_FLAGS) ./...
+
+## lint-new: run golangci-lint for issues introduced since LINT_BASE
+lint-new: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run $(LINT_FLAGS) --new-from-merge-base=$(LINT_BASE) --whole-files ./...
+
+## lint-changed: run golangci-lint only for packages touched by changed Go files
+lint-changed: $(GOLANGCI_LINT)
+	@case "$(LINT_CHANGED_SCOPE)" in \
+		staged) \
+			files="$$(git diff --cached --name-only --diff-filter=ACMRT -- '*.go')"; \
+			;; \
+		tracked) \
+			files="$$(git diff --name-only --diff-filter=ACMRT "$(LINT_CHANGED_REF)" -- '*.go')"; \
+			;; \
+		worktree) \
+			files="$$( \
+				git diff --name-only --diff-filter=ACMRT "$(LINT_CHANGED_REF)" -- '*.go'; \
+				git diff --cached --name-only --diff-filter=ACMRT -- '*.go'; \
+				git ls-files --others --exclude-standard -- '*.go'; \
+			)"; \
+			;; \
+		*) \
+			echo "unknown LINT_CHANGED_SCOPE=$(LINT_CHANGED_SCOPE); expected staged, tracked, or worktree" >&2; \
+			exit 2; \
+			;; \
+	esac; \
+	if [ -z "$$files" ]; then \
+		echo "lint-changed: no changed Go files"; \
+		exit 0; \
+	fi; \
+	pkgs="$$(printf '%s\n' "$$files" | sed '/^$$/d' | sort -u | while IFS= read -r file; do dirname "$$file"; done | sort -u | while IFS= read -r dir; do \
+		if [ "$$dir" = "." ]; then pkg="."; else pkg="./$$dir"; fi; \
+		if go list "$$pkg" >/dev/null 2>&1; then printf '%s\n' "$$pkg"; fi; \
+	done | sort -u)"; \
+	if [ -z "$$pkgs" ]; then \
+		echo "lint-changed: no lintable Go packages"; \
+		exit 0; \
+	fi; \
+	echo "lint-changed: $$(printf '%s\n' "$$pkgs" | tr '\n' ' ')"; \
+	$(GOLANGCI_LINT) run $(LINT_FLAGS) $$pkgs
 
 ## fmt-check: fail if formatting would change files
 fmt-check: $(GOLANGCI_LINT)
@@ -160,14 +208,28 @@ TEST_ENV = env -i \
 	GOINSECURE="$${GOINSECURE-}" \
 	GOVCS="$${GOVCS-}" \
 	GOWORK="$${GOWORK-}" \
+	ANTHROPIC_BASE_URL="$${ANTHROPIC_BASE_URL-}" \
+	ANTHROPIC_API_KEY="$${ANTHROPIC_API_KEY-}" \
+	ANTHROPIC_AUTH_TOKEN="$${ANTHROPIC_AUTH_TOKEN-}" \
+	ANTHROPIC_DEFAULT_HAIKU_MODEL="$${ANTHROPIC_DEFAULT_HAIKU_MODEL-}" \
+	ANTHROPIC_DEFAULT_SONNET_MODEL="$${ANTHROPIC_DEFAULT_SONNET_MODEL-}" \
+	ANTHROPIC_DEFAULT_OPUS_MODEL="$${ANTHROPIC_DEFAULT_OPUS_MODEL-}" \
+	CLAUDE_CODE_SUBAGENT_MODEL="$${CLAUDE_CODE_SUBAGENT_MODEL-}" \
+	CLAUDE_CODE_EFFORT_LEVEL="$${CLAUDE_CODE_EFFORT_LEVEL-}" \
+	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="$${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC-}" \
+	OLLAMA_API_KEY="$${OLLAMA_API_KEY-}" \
 	$(EXTRA_TEST_ENV)
 
 ## test: run fast unit tests (skip integration-tagged and GC_FAST_UNIT-gated process tests)
 ## The skipped cmd/gc process-backed scenarios remain covered by
 ## `make test-cmd-gc-process` locally and the CI `cmd/gc process suite` job.
+## Bound package parallelism so subprocess-heavy packages do not starve each
+## other into false 5s probe/condition timeouts. Use -count=1 so pre-commit
+## reports actual test results instead of hanging after PASS while Go computes
+## cache input hashes over local working files.
 ## Wrapped in $(TEST_ENV) — see comment above for why.
 test: test-fsys-darwin-compile
-	$(TEST_ENV) GC_FAST_UNIT=1 go test ./...
+	$(TEST_ENV) GC_FAST_UNIT=1 scripts/go-test-observable test -- -p=4 -count=1 ./...
 
 LOCAL_TEST_JOBS ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
 
@@ -185,7 +247,7 @@ test-fsys-darwin-compile:
 ## test-cmd-gc-process: run the full non-short cmd/gc suite, including the
 ## process-backed lifecycle coverage routed out of the default fast loop
 test-cmd-gc-process:
-	$(TEST_ENV) GC_FAST_UNIT=0 go test -count=1 -timeout 20m ./cmd/gc
+	$(TEST_ENV) GC_FAST_UNIT=0 scripts/go-test-observable test-cmd-gc-process -- -timeout 25m ./cmd/gc
 
 CMD_GC_PROCESS_SHARD ?= 1
 CMD_GC_PROCESS_TOTAL ?= 6

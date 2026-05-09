@@ -141,13 +141,16 @@ func doDoctor(fix, verbose bool, stdout, stderr io.Writer) int {
 		resolveRigPaths(cityPath, cfg.Rigs)
 		if workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs) {
 			d.Register(newDoltTopologyCheck(cityPath, cfg))
+			d.Register(newDoltDriftCheck(cityPath, cfg))
 		}
 		d.Register(doctor.NewConfigValidCheck(cfg))
 		d.Register(doctor.NewConfigRefsCheck(cfg, cityPath))
+		d.Register(doctor.NewPreStartScriptsCheck(cfg))
 		d.Register(doctor.NewBuiltinPackFamilyCheck(cfg, cityPath))
 		d.Register(doctor.NewConfigSemanticsCheck(cfg, filepath.Join(cityPath, "city.toml")))
 		d.Register(doctor.NewDurationRangeCheck(cfg))
 		d.Register(doctor.NewSkillCollisionCheck(cfg, cityPath))
+		d.Register(newCodexHooksDriftCheck(codexHookWorkDirs(cityPath, cfg)))
 		d.Register(newMCPConfigDoctorCheck(cityPath, cfg, exec.LookPath))
 		d.Register(newMCPSharedTargetDoctorCheck(cityPath, cfg, exec.LookPath))
 	}
@@ -199,6 +202,7 @@ func doDoctor(fix, verbose bool, stdout, stderr io.Writer) int {
 	if cfgErr == nil {
 		d.Register(doctor.NewBDSplitStoreCheck(cityPath))
 		d.Register(doctor.NewBeadsStoreCheck(cityPath, storeFactory))
+		d.Register(newV2RoutedToNamespaceCheck(cfg, cityPath, storeFactory))
 		d.Register(&sessionModelDoctorCheck{cfg: cfg, cityPath: cityPath, newStore: storeFactory})
 	}
 	skipCityDoltCheck := os.Getenv("GC_DOLT") == "skip" || (!scopeUsesManagedBdStoreContract(cityPath, cityPath) && !workspaceNeedsCityDoltCheck(cityPath, cfg))
@@ -214,6 +218,16 @@ func doDoctor(fix, verbose bool, stdout, stderr io.Writer) int {
 	d.Register(doctor.NewScopedDoltVersionCheckForConfig(cityPath, skipManagedDoltCheck, cfg, cfgErr))
 	d.Register(&doctor.EventsLogCheck{})
 	d.Register(doctor.NewEventLogSizeCheck())
+	// Worktree checks deliberately run even when cfgErr != nil — they
+	// only need the city path, and a broken city.toml is exactly when
+	// silent disk-fill is most likely. The zero-value DoctorConfig
+	// produces sensible 10/50 GB defaults via its accessor methods.
+	var doctorCfg config.DoctorConfig
+	if cfg != nil {
+		doctorCfg = cfg.Doctor
+	}
+	d.Register(doctor.NewWorktreeDiskSizeCheck(doctorCfg))
+	d.Register(doctor.NewNestedWorktreePruneCheck(doctorCfg))
 
 	// Custom types check — city store.
 	d.Register(doctor.NewCustomTypesCheck(cityPath, "city"))

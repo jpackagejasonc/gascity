@@ -62,6 +62,7 @@ func newSessionWaitCmd(stdout, stderr io.Writer) *cobra.Command {
 			}
 			return nil
 		},
+		ValidArgsFunction: completeSessionIDs,
 	}
 	cmd.Flags().StringSliceVar(&depIDs, "on-beads", nil, "bead IDs to watch")
 	cmd.Flags().BoolVar(&matchAny, "any", false, "wake when any watched bead closes (default: all)")
@@ -587,8 +588,15 @@ func prepareWaitWakeStateForCityWithSnapshot(cityPath string, store beads.Store,
 		}
 		sessionBead, ok := sessionBeads.FindByID(sessionID)
 		if !ok {
-			if anySessionBead, found := sessionBeads.findByIDIncludingClosed(sessionID); found {
-				sessionBead = anySessionBead
+			if wait.Metadata["registered_epoch"] != "" {
+				var found bool
+				sessionBead, found, err = lookupSessionBeadByID(store, sessionID)
+				if err != nil {
+					return nil, err
+				}
+				if !found {
+					continue
+				}
 			} else {
 				continue
 			}
@@ -670,11 +678,28 @@ func prepareWaitWakeStateForCityWithSnapshot(cityPath string, store beads.Store,
 	return readyWaitSet, nil
 }
 
-func dispatchReadyWaitNudges(cityPath string, store beads.Store, _ runtime.Provider, now time.Time) error {
-	return dispatchReadyWaitNudgesWithSnapshot(cityPath, store, now, nil)
+func lookupSessionBeadByID(store beads.Store, id string) (beads.Bead, bool, error) {
+	if store == nil || strings.TrimSpace(id) == "" {
+		return beads.Bead{}, false, nil
+	}
+	bead, err := store.Get(id)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return beads.Bead{}, false, nil
+		}
+		return beads.Bead{}, false, err
+	}
+	if !sessionpkg.IsSessionBeadOrRepairable(bead) {
+		return beads.Bead{}, false, nil
+	}
+	return bead, true, nil
 }
 
-func dispatchReadyWaitNudgesWithSnapshot(cityPath string, store beads.Store, now time.Time, sessionBeads *sessionBeadSnapshot) error {
+func dispatchReadyWaitNudges(cityPath string, store beads.Store, _ runtime.Provider, now time.Time) error {
+	return dispatchReadyWaitNudgesWithSnapshot(cityPath, nil, store, now, nil)
+}
+
+func dispatchReadyWaitNudgesWithSnapshot(cityPath string, cfg *config.City, store beads.Store, now time.Time, sessionBeads *sessionBeadSnapshot) error {
 	waits, err := loadWaitBeads(store)
 	if err != nil {
 		return err
@@ -730,7 +755,7 @@ func dispatchReadyWaitNudgesWithSnapshot(cityPath string, store beads.Store, now
 		// aliases (e.g. [providers.my-wrapped-codex] base = "builtin:codex")
 		// already surface as "codex" here. The provider fallback covers
 		// sessions created before provider_kind was stamped.
-		if sessionProviderFamily(sessionBead) == "codex" {
+		if sessionProviderFamily(sessionBead) == "codex" && !nudgeDispatcherIsSupervisor(cfg) {
 			if err := startNudgePoller(cityPath, waitNudgeAgent(sessionBead), sessionBead.Metadata["session_name"]); err != nil {
 				return fmt.Errorf("starting wait nudge poller: %w", err)
 			}
